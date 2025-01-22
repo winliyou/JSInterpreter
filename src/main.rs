@@ -194,6 +194,15 @@ impl Parser {
                     }
                 }
             }
+            Some(Token::Return) => {
+                self.position += 1;
+                if let Some(expr) = self.parse_expression() {
+                    if let Some(Token::Semicolon) = self.tokens.get(self.position) {
+                        self.position += 1;
+                        return Some(Statement::Expression(expr));
+                    }
+                }
+            }
             _ => {
                 if let Some(expr) = self.parse_expression() {
                     if let Some(Token::Semicolon) = self.tokens.get(self.position) {
@@ -222,35 +231,41 @@ impl Parser {
     }
 
     fn parse_term(&mut self) -> Option<Expression> {
-        match self.tokens.get(self.position) {
+        match self.tokens.get(self.position).cloned() {
             Some(Token::Number(num)) => {
                 self.position += 1;
-                Some(Expression::Number(*num))
+                Some(Expression::Number(num))
             }
             Some(Token::Identifier(name)) => {
                 self.position += 1;
                 let mut expr = Expression::Variable(name.clone());
-                while let Some(Token::Dot) = self.tokens.get(self.position) {
-                    self.position += 1; // Skip '.'
-                    if let Some(Token::Identifier(field)) = self.tokens.get(self.position).cloned()
-                    {
-                        self.position += 1;
-                        expr = Expression::ObjectAccess(Box::new(expr), field);
-                    }
-                }
-                if let Some(Token::LParen) = self.tokens.get(self.position) {
-                    self.position += 1; // Skip '('
-                    let mut args = Vec::new();
-                    while self.tokens.get(self.position) != Some(&Token::RParen) {
-                        if let Some(arg) = self.parse_expression() {
-                            args.push(arg);
-                            if let Some(Token::Comma) = self.tokens.get(self.position) {
-                                self.position += 1; // Skip ','
+                while let Some(token) = self.tokens.get(self.position).cloned() {
+                    match token {
+                        Token::Dot => {
+                            self.position += 1; // Skip '.'
+                            if let Some(Token::Identifier(field)) =
+                                self.tokens.get(self.position).cloned()
+                            {
+                                self.position += 1;
+                                expr = Expression::ObjectAccess(Box::new(expr), field);
                             }
                         }
+                        Token::LParen => {
+                            self.position += 1; // Skip '('
+                            let mut args = Vec::new();
+                            while self.tokens.get(self.position) != Some(&Token::RParen) {
+                                if let Some(arg) = self.parse_expression() {
+                                    args.push(arg);
+                                    if let Some(Token::Comma) = self.tokens.get(self.position) {
+                                        self.position += 1; // Skip ','
+                                    }
+                                }
+                            }
+                            self.position += 1; // Skip ')'
+                            expr = Expression::FunctionCall(name.clone(), args);
+                        }
+                        _ => break,
                     }
-                    self.position += 1; // Skip ')'
-                    expr = Expression::FunctionCall(name.clone(), args);
                 }
                 Some(expr)
             }
@@ -352,7 +367,8 @@ impl Interpreter {
                 }
             }
             Expression::FunctionCall(name, args) => {
-                if let Value::Function(params, body) = self.variables.get(&name).cloned().unwrap() {
+                let func = self.variables.get(&name).cloned().unwrap();
+                if let Value::Function(params, body) = func {
                     let mut local_context = self.variables.clone();
                     for (param, arg) in params.iter().zip(args) {
                         let arg_value = self.evaluate_expression(arg);
@@ -379,7 +395,7 @@ fn main() {
         function myfun(x, y) {
             return x + y;
         }
-        myfun(obj.x, obj.y);
+        myfun(obj.x+100, obj.y);
     "#;
 
     let mut lexer = Lexer::new(code);
