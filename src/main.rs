@@ -927,53 +927,62 @@ impl Interpreter {
             }
             Expression::FunctionCall(name, args) => {
                 if name == "print" {
-                    if let Some(Expression::Variable(format_string)) = args.get(0) {
-                        match self.variables.get(format_string) {
-                            Some(Value::StringLiteral(string)) => {
-                                println!(
-                                    "variable name: {} , string name: {}",
-                                    format_string, string
-                                );
-                                let format_string = self.string_literals.get(string).unwrap();
-                                println!("for functionCall {}", format_string);
+                    // 处理格式化字符串打印
+                    if let Some(first_arg) = args.first() {
+                        let format_value = self.evaluate_expression(first_arg.clone());
+                        if let Value::StringLiteral(format_name) = format_value {
+                            // 获取实际的格式化字符串
+                            let mut format_string = self.string_literals.get(&format_name).unwrap().clone();
+                            
+                            // 处理剩余参数
+                            for arg in args.iter().skip(1) {
+                                let value = self.evaluate_expression(arg.clone());
+                                let replacement = match value {
+                                    Value::Number(num) => num.to_string(),
+                                    Value::StringLiteral(name) => {
+                                        self.string_literals.get(&name).unwrap().clone()
+                                    }
+                                    Value::Object(map) => {
+                                        let fields: Vec<String> = map
+                                            .iter()
+                                            .map(|(key, value)| format!("{}: {}", key, value))
+                                            .collect();
+                                        format!("{{{}}}", fields.join(", "))
+                                    }
+                                    Value::Function(params, _) => {
+                                        format!("function({})", params.join(", "))
+                                    }
+                                };
+                                
+                                // 替换第一个 {} 占位符
+                                if let Some(pos) = format_string.find("{}") {
+                                    format_string.replace_range(pos..pos+2, &replacement);
+                                }
                             }
-                            _ => (),
-                        }
-                        let format_string = self.variables.get(format_string).unwrap().to_string();
-                        let mut formatted_string = format_string.clone();
-                        for (_, arg) in args.iter().skip(1).enumerate() {
-                            let value = self.evaluate_expression(arg.clone());
-                            match value {
-                                Value::Number(num) => {
-                                    formatted_string = formatted_string
-                                        .replace(&format!("{{}}"), &format!("{}", num));
+                            println!("{}", format_string);
+                        } else {
+                            // 如果第一个参数不是字符串,则按普通方式打印所有参数
+                            for arg in args {
+                                let value = self.evaluate_expression(arg);
+                                match value {
+                                    Value::Number(num) => print!("{} ", num),
+                                    Value::StringLiteral(name) => {
+                                        print!("{} ", self.string_literals.get(&name).unwrap());
+                                    }
+                                    Value::Object(map) => {
+                                        let fields: Vec<String> = map
+                                            .iter()
+                                            .map(|(key, value)| format!("{}: {}", key, value))
+                                            .collect();
+                                        print!("{{{}}} ", fields.join(", "));
+                                    }
+                                    Value::Function(params, _) => {
+                                        print!("function({}) ", params.join(", "));
+                                    }
                                 }
-                                Value::StringLiteral(string) => {
-                                    println!("string: {}", string);
-                                    formatted_string = formatted_string
-                                        .replace(&format!("{{}}"), &format!("{}", string));
-                                }
-                                Value::Object(map) => {
-                                    let fields: Vec<String> = map
-                                        .iter()
-                                        .map(|(key, value)| format!("{}: {:?}", key, value))
-                                        .collect();
-                                    formatted_string = formatted_string.replace(
-                                        &format!("{{}}"),
-                                        &format!("{{{}}}", fields.join(", ")),
-                                    );
-                                }
-                                _ => panic!("Unsupported type in print statement"),
                             }
+                            println!();
                         }
-                        println!("{}", formatted_string);
-                    } else {
-                        for arg in args {
-                            let value = self.evaluate_expression(arg);
-                            println!("function parameters: {:?}", value);
-                            self.print_value(value);
-                        }
-                        println!();
                     }
                     Value::Number(0)
                 } else {
@@ -998,24 +1007,6 @@ impl Interpreter {
             }
         }
     }
-
-    fn print_value(&self, value: Value) {
-        match value {
-            Value::Number(num) => print!("{}", num),
-            Value::StringLiteral(name) => {
-                let string_value = self.string_literals.get(&name).unwrap();
-                print!("{}", string_value);
-            }
-            Value::Object(map) => {
-                let fields: Vec<String> = map
-                    .iter()
-                    .map(|(key, value)| format!("{}: {:?}", key, value))
-                    .collect();
-                print!("{{{}}}", fields.join(", "));
-            }
-            _ => panic!("Unsupported type in print statement"),
-        }
-    }
 }
 
 fn main() {
@@ -1033,10 +1024,10 @@ fn main() {
         }
         let aaa=myfun(obj.x+100, obj.y);
         let greeting = greet("World");
-        print("var: ", aaa + 12);
-        print("var: ", aaa);
-        print("var: ", obj.y);
-        print("var: ", aaa - obj.y);
+        print("var: {}", aaa + 12);
+        print("var: {}", aaa);
+        print("var: {}", obj.y);
+        print("var: {}", aaa - obj.y);
         print(greeting);
     "#;
     let mut lexer = Lexer::new(code);
