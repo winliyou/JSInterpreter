@@ -1,7 +1,28 @@
-use std::collections::HashMap;
+use log::info;
+use std::clone;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::{
+    collections::HashMap,
+    fmt::{self, Display, Formatter},
+    rc::Rc,
+};
 
 #[derive(Debug, Clone, PartialEq)]
-enum Token {
+struct Token {
+    kind: TokenKind,
+    line: usize,
+    column: usize,
+}
+
+impl Display for Token {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{:?}", self.kind)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum TokenKind {
     LBrace,
     RBrace,
     Colon,
@@ -10,14 +31,10 @@ enum Token {
     Semicolon,
     Identifier(String),
     Number(i32),
-    Function,
-    If,
-    Else,
-    Let,
-    Return,
-    Plus,
-    Greater,
-    Less,
+    StringLiteral(String), // 新增 StringLiteral 类型
+    Keyword(String),
+    BuiltIn(String),
+    Operator(String), // 新增 Operator 类型
     LParen,
     RParen,
     Dot,
@@ -27,12 +44,12 @@ enum Token {
 #[derive(Debug, Clone, PartialEq)]
 enum Expression {
     Number(i32),
+    StringLiteral(String), // 新增 StringLiteral 类型
     Variable(String),
     Object(HashMap<String, Expression>),
     ObjectAccess(Box<Expression>, String),
     BinaryOp(Box<Expression>, String, Box<Expression>),
     FunctionCall(String, Vec<Expression>),
-    IfElse(Box<Expression>, Box<Expression>, Option<Box<Expression>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,18 +57,41 @@ enum Statement {
     Let(String, Expression),
     FunctionDef(String, Vec<String>, Vec<Statement>),
     Expression(Expression),
+    Assignment(Expression, Expression), // 新增 Assignment 语句类型
+    If(Expression, Vec<Statement>, Option<Vec<Statement>>), // 新增 If 语句类型
+    Return(Expression),                 // 新增 Return 语句类型
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Value {
     Number(i32),
     Object(HashMap<String, Value>),
+    StringLiteral(String), // 新增 StringLiteral 类型
     Function(Vec<String>, Vec<Statement>),
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Value::Number(num) => write!(f, "{}", num),
+            Value::StringLiteral(string) => write!(f, "\"{}\"", string), // 新增 StringLiteral 类型
+            Value::Object(map) => {
+                let fields: Vec<String> = map
+                    .iter()
+                    .map(|(key, value)| format!("{}: {:?}", key, value))
+                    .collect();
+                write!(f, "{{{}}}", fields.join(", "))
+            }
+            Value::Function(params, _) => write!(f, "fn({})", params.join(", ")),
+        }
+    }
 }
 
 struct Lexer {
     input: Vec<char>,
     position: usize,
+    line: usize,
+    column: usize,
 }
 
 impl Lexer {
@@ -59,74 +99,208 @@ impl Lexer {
         Self {
             input: input.chars().collect(),
             position: 0,
+            line: 1,
+            column: 1,
         }
     }
 
     fn next_token(&mut self) -> Option<Token> {
         while let Some(&ch) = self.input.get(self.position) {
+            let token_start_line = self.line;
+            let token_start_column = self.column;
             self.position += 1;
+            self.column += 1;
             return match ch {
-                '{' => Some(Token::LBrace),
-                '}' => Some(Token::RBrace),
-                ':' => Some(Token::Colon),
-                ',' => Some(Token::Comma),
-                '=' => Some(Token::Equals),
-                ';' => Some(Token::Semicolon),
-                '(' => Some(Token::LParen),
-                ')' => Some(Token::RParen),
-                '+' => Some(Token::Plus),
-                '>' => Some(Token::Greater),
-                '<' => Some(Token::Less),
-                '.' => Some(Token::Dot),
-                'a'..='z' | 'A'..='Z' => {
-                    let mut ident = ch.to_string();
-                    while let Some(&next) = self.input.get(self.position) {
-                        if next.is_alphanumeric() {
-                            ident.push(next);
-                            self.position += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    match ident.as_str() {
-                        "let" => Some(Token::Let),
-                        "function" => Some(Token::Function),
-                        "if" => Some(Token::If),
-                        "else" => Some(Token::Else),
-                        "return" => Some(Token::Return),
-                        _ => Some(Token::Identifier(ident)),
-                    }
+                '{' => {
+                    Some(self.create_token(TokenKind::LBrace, token_start_line, token_start_column))
                 }
-                '0'..='9' => {
-                    let mut num = ch.to_string();
-                    while let Some(&next) = self.input.get(self.position) {
-                        if next.is_digit(10) {
-                            num.push(next);
-                            self.position += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    Some(Token::Number(num.parse().unwrap()))
+                '}' => {
+                    Some(self.create_token(TokenKind::RBrace, token_start_line, token_start_column))
+                }
+                ':' => {
+                    Some(self.create_token(TokenKind::Colon, token_start_line, token_start_column))
+                }
+                ',' => {
+                    Some(self.create_token(TokenKind::Comma, token_start_line, token_start_column))
+                }
+                '=' => self.handle_equals(token_start_line, token_start_column),
+                ';' => Some(self.create_token(
+                    TokenKind::Semicolon,
+                    token_start_line,
+                    token_start_column,
+                )),
+                '(' => {
+                    Some(self.create_token(TokenKind::LParen, token_start_line, token_start_column))
+                }
+                ')' => {
+                    Some(self.create_token(TokenKind::RParen, token_start_line, token_start_column))
+                }
+                '+' => Some(self.create_token(
+                    TokenKind::Operator("+".to_string()),
+                    token_start_line,
+                    token_start_column,
+                )),
+                '-' => Some(self.create_token(
+                    TokenKind::Operator("-".to_string()),
+                    token_start_line,
+                    token_start_column,
+                )),
+                '*' => Some(self.create_token(
+                    TokenKind::Operator("*".to_string()),
+                    token_start_line,
+                    token_start_column,
+                )),
+                '/' => Some(self.create_token(
+                    TokenKind::Operator("/".to_string()),
+                    token_start_line,
+                    token_start_column,
+                )),
+                '>' => self.handle_greater(token_start_line, token_start_column),
+                '<' => self.handle_less(token_start_line, token_start_column),
+                '.' => {
+                    Some(self.create_token(TokenKind::Dot, token_start_line, token_start_column))
+                }
+                '!' => self.handle_not(token_start_line, token_start_column),
+                '"' => self.handle_string(token_start_line, token_start_column),
+                'a'..='z' | 'A'..='Z' => {
+                    self.handle_identifier(ch, token_start_line, token_start_column)
+                }
+                '0'..='9' => self.handle_number(ch, token_start_line, token_start_column),
+                '\n' => {
+                    self.line += 1;
+                    self.column = 1;
+                    continue;
                 }
                 _ if ch.is_whitespace() => continue,
-                _ => Some(Token::Unknown(ch)),
+                _ => Some(self.create_token(
+                    TokenKind::Unknown(ch),
+                    token_start_line,
+                    token_start_column,
+                )),
             };
         }
         None
     }
+
+    fn create_token(&self, kind: TokenKind, line: usize, column: usize) -> Token {
+        Token { kind, line, column }
+    }
+
+    fn handle_equals(&mut self, line: usize, column: usize) -> Option<Token> {
+        if let Some(&'=') = self.input.get(self.position) {
+            self.position += 1;
+            self.column += 1;
+            Some(self.create_token(TokenKind::Operator("==".to_string()), line, column))
+        } else {
+            Some(self.create_token(TokenKind::Equals, line, column))
+        }
+    }
+
+    fn handle_greater(&mut self, line: usize, column: usize) -> Option<Token> {
+        if let Some(&'=') = self.input.get(self.position) {
+            self.position += 1;
+            self.column += 1;
+            Some(self.create_token(TokenKind::Operator(">=".to_string()), line, column))
+        } else {
+            Some(self.create_token(TokenKind::Operator(">".to_string()), line, column))
+        }
+    }
+
+    fn handle_less(&mut self, line: usize, column: usize) -> Option<Token> {
+        if let Some(&'=') = self.input.get(self.position) {
+            self.position += 1;
+            self.column += 1;
+            Some(self.create_token(TokenKind::Operator("<=".to_string()), line, column))
+        } else {
+            Some(self.create_token(TokenKind::Operator("<".to_string()), line, column))
+        }
+    }
+
+    fn handle_not(&mut self, line: usize, column: usize) -> Option<Token> {
+        if let Some(&'=') = self.input.get(self.position) {
+            self.position += 1;
+            self.column += 1;
+            Some(self.create_token(TokenKind::Operator("!=".to_string()), line, column))
+        } else {
+            Some(self.create_token(TokenKind::Unknown('!'), line, column))
+        }
+    }
+
+    fn handle_identifier(&mut self, ch: char, line: usize, column: usize) -> Option<Token> {
+        let mut ident = ch.to_string();
+        while let Some(&next) = self.input.get(self.position) {
+            if next.is_alphanumeric() {
+                ident.push(next);
+                self.position += 1;
+                self.column += 1;
+            } else {
+                break;
+            }
+        }
+        let kind = match ident.as_str() {
+            "let" | "function" | "if" | "else" | "return" => TokenKind::Keyword(ident),
+            "print" => TokenKind::BuiltIn("print".to_string()),
+            _ => TokenKind::Identifier(ident),
+        };
+        Some(self.create_token(kind, line, column))
+    }
+
+    fn handle_number(&mut self, ch: char, line: usize, column: usize) -> Option<Token> {
+        let mut num = ch.to_string();
+        while let Some(&next) = self.input.get(self.position) {
+            if next.is_digit(10) {
+                num.push(next);
+                self.position += 1;
+                self.column += 1;
+            } else {
+                break;
+            }
+        }
+        Some(self.create_token(TokenKind::Number(num.parse().unwrap()), line, column))
+    }
+
+    fn handle_string(&mut self, line: usize, column: usize) -> Option<Token> {
+        let mut string = String::new();
+        while let Some(&ch) = self.input.get(self.position) {
+            self.position += 1;
+            self.column += 1;
+            if ch == '"' {
+                break;
+            }
+            string.push(ch);
+        }
+        Some(self.create_token(TokenKind::StringLiteral(string), line, column))
+    }
+
+    fn get_line_content(&self, line: usize) -> String {
+        let mut current_line = String::new();
+        let mut current_line_number = 1;
+        for &ch in &self.input {
+            if current_line_number == line {
+                if ch == '\n' {
+                    break;
+                }
+                current_line.push(ch);
+            } else if ch == '\n' {
+                current_line_number += 1;
+            }
+        }
+        current_line
+    }
 }
 
 struct Parser {
-    tokens: Vec<Token>,
+    tokens: Rc<Vec<Token>>,
     position: usize,
+    lexer: Lexer, // 新增 lexer 字段
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
+    fn new(tokens: Rc<Vec<Token>>, lexer: Lexer) -> Self {
         Self {
             tokens,
             position: 0,
+            lexer,
         }
     }
 
@@ -143,71 +317,118 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Option<Statement> {
-        match self.tokens.get(self.position) {
-            Some(Token::Let) => {
-                self.position += 1;
-                if let Some(Token::Identifier(name)) = self.tokens.get(self.position).cloned() {
-                    self.position += 1;
-                    if let Some(Token::Equals) = self.tokens.get(self.position) {
-                        self.position += 1;
-                        if let Some(expr) = self.parse_expression() {
-                            if let Some(Token::Semicolon) = self.tokens.get(self.position) {
-                                self.position += 1;
-                                return Some(Statement::Let(name, expr));
-                            }
-                        }
+        match self.tokens.clone().get(self.position).map(|t| &t.kind) {
+            Some(TokenKind::Keyword(keyword)) => self.handle_keyword(keyword),
+            Some(TokenKind::BuiltIn(name)) if name == "print" => self.handle_builtin(name),
+            _ => self.handle_other(),
+        }
+    }
+
+    fn handle_keyword(&mut self, keyword: &String) -> Option<Statement> {
+        match keyword.as_str() {
+            "let" => self.parse_let(),
+            "function" => self.parse_function(),
+            "return" => self.parse_return(),
+            "if" => self.parse_if(),
+            _ => None,
+        }
+    }
+
+    fn handle_builtin(&mut self, name: &String) -> Option<Statement> {
+        self.position += 1;
+        if let Some(Token {
+            kind: TokenKind::LParen,
+            ..
+        }) = self.tokens.get(self.position)
+        {
+            self.position += 1;
+            let mut args = Vec::new();
+            while self.tokens.get(self.position).map(|t| &t.kind) != Some(&TokenKind::RParen) {
+                if let Some(arg) = self.parse_expression() {
+                    args.push(arg);
+                    if let Some(Token {
+                        kind: TokenKind::Comma,
+                        ..
+                    }) = self.tokens.get(self.position)
+                    {
+                        self.position += 1; // Skip ','
                     }
                 }
             }
-            Some(Token::Function) => {
+            if self.tokens.get(self.position).map(|t| &t.kind) == Some(&TokenKind::RParen) {
+                self.position += 1; // Skip ')'
+                if let Some(Token {
+                    kind: TokenKind::Semicolon,
+                    ..
+                }) = self.tokens.get(self.position)
+                {
+                    self.position += 1; // Skip ';'
+                    return Some(Statement::Expression(Expression::FunctionCall(
+                        name.to_string(),
+                        args,
+                    )));
+                }
+            } else {
+                self.print_error("unmatched '('");
+                std::process::exit(1);
+            }
+        }
+        None
+    }
+
+    fn handle_other(&mut self) -> Option<Statement> {
+        info!("current token is {:?}", self.tokens.get(self.position));
+        if let Some(expr) = self.parse_expression() {
+            if let Some(Token {
+                kind: TokenKind::Equals,
+                ..
+            }) = self.tokens.get(self.position)
+            {
                 self.position += 1;
-                if let Some(Token::Identifier(name)) = self.tokens.get(self.position).cloned() {
-                    self.position += 1;
-                    if let Some(Token::LParen) = self.tokens.get(self.position) {
+                if let Some(value_expr) = self.parse_expression() {
+                    if let Some(Token {
+                        kind: TokenKind::Semicolon,
+                        ..
+                    }) = self.tokens.get(self.position)
+                    {
                         self.position += 1;
-                        let mut params = Vec::new();
-                        while let Some(Token::Identifier(param)) =
-                            self.tokens.get(self.position).cloned()
-                        {
-                            params.push(param);
-                            self.position += 1;
-                            if let Some(Token::Comma) = self.tokens.get(self.position) {
-                                self.position += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        if let Some(Token::RParen) = self.tokens.get(self.position) {
-                            self.position += 1;
-                            let mut body = Vec::new();
-                            if let Some(Token::LBrace) = self.tokens.get(self.position) {
-                                self.position += 1;
-                                while self.tokens.get(self.position) != Some(&Token::RBrace) {
-                                    if let Some(stmt) = self.parse_statement() {
-                                        body.push(stmt);
-                                    }
-                                }
-                                self.position += 1; // Skip '}'
-                                return Some(Statement::FunctionDef(name, params, body));
-                            }
-                        }
+                        return Some(Statement::Assignment(expr, value_expr));
                     }
                 }
+            } else if let Some(Token {
+                kind: TokenKind::Semicolon,
+                ..
+            }) = self.tokens.get(self.position)
+            {
+                self.position += 1;
+                return Some(Statement::Expression(expr));
             }
-            Some(Token::Return) => {
+        }
+        None
+    }
+
+    fn parse_let(&mut self) -> Option<Statement> {
+        self.position += 1;
+        if let Some(Token {
+            kind: TokenKind::Identifier(name),
+            ..
+        }) = self.tokens.get(self.position).cloned()
+        {
+            self.position += 1;
+            if let Some(Token {
+                kind: TokenKind::Equals,
+                ..
+            }) = self.tokens.get(self.position)
+            {
                 self.position += 1;
                 if let Some(expr) = self.parse_expression() {
-                    if let Some(Token::Semicolon) = self.tokens.get(self.position) {
+                    if let Some(Token {
+                        kind: TokenKind::Semicolon,
+                        ..
+                    }) = self.tokens.get(self.position)
+                    {
                         self.position += 1;
-                        return Some(Statement::Expression(expr));
-                    }
-                }
-            }
-            _ => {
-                if let Some(expr) = self.parse_expression() {
-                    if let Some(Token::Semicolon) = self.tokens.get(self.position) {
-                        self.position += 1;
-                        return Some(Statement::Expression(expr));
+                        return Some(Statement::Let(name, expr));
                     }
                 }
             }
@@ -215,127 +436,445 @@ impl Parser {
         None
     }
 
+    fn parse_function(&mut self) -> Option<Statement> {
+        self.position += 1;
+        if let Some(Token {
+            kind: TokenKind::Identifier(name),
+            ..
+        }) = self.tokens.get(self.position).cloned()
+        {
+            self.position += 1;
+            if let Some(Token {
+                kind: TokenKind::LParen,
+                ..
+            }) = self.tokens.get(self.position)
+            {
+                self.position += 1;
+                let mut params = Vec::new();
+                while let Some(Token {
+                    kind: TokenKind::Identifier(param),
+                    ..
+                }) = self.tokens.get(self.position).cloned()
+                {
+                    params.push(param);
+                    self.position += 1;
+                    if let Some(Token {
+                        kind: TokenKind::Comma,
+                        ..
+                    }) = self.tokens.get(self.position)
+                    {
+                        self.position += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(Token {
+                    kind: TokenKind::RParen,
+                    ..
+                }) = self.tokens.get(self.position)
+                {
+                    self.position += 1;
+                    let mut body = Vec::new();
+                    if let Some(Token {
+                        kind: TokenKind::LBrace,
+                        ..
+                    }) = self.tokens.get(self.position)
+                    {
+                        self.position += 1;
+                        while self.tokens.get(self.position).map(|t| &t.kind)
+                            != Some(&TokenKind::RBrace)
+                        {
+                            if let Some(stmt) = self.parse_statement() {
+                                body.push(stmt);
+                            }
+                        }
+                        self.position += 1; // Skip '}'
+                        return Some(Statement::FunctionDef(name, params, body));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_return(&mut self) -> Option<Statement> {
+        self.position += 1;
+        if let Some(expr) = self.parse_expression() {
+            if let Some(Token {
+                kind: TokenKind::Semicolon,
+                ..
+            }) = self.tokens.get(self.position)
+            {
+                self.position += 1;
+                return Some(Statement::Return(expr));
+            }
+        }
+        None
+    }
+
+    fn parse_if(&mut self) -> Option<Statement> {
+        self.position += 1;
+        let condition = if let Some(Token {
+            kind: TokenKind::LParen,
+            ..
+        }) = self.tokens.get(self.position)
+        {
+            self.position += 1;
+            let cond = self.parse_expression();
+            if let Some(Token {
+                kind: TokenKind::RParen,
+                ..
+            }) = self.tokens.get(self.position)
+            {
+                self.position += 1;
+            }
+            cond
+        } else {
+            self.parse_expression()
+        };
+
+        if let Some(condition) = condition {
+            if let Some(Token {
+                kind: TokenKind::LBrace,
+                ..
+            }) = self.tokens.get(self.position)
+            {
+                self.position += 1;
+                let mut consequence = Vec::new();
+                while self.tokens.get(self.position).map(|t| &t.kind) != Some(&TokenKind::RBrace) {
+                    if let Some(stmt) = self.parse_statement() {
+                        consequence.push(stmt);
+                    }
+                }
+                self.position += 1; // Skip '}'
+                let alternative = if let Some(Token {
+                    kind: TokenKind::Keyword(else_keyword),
+                    ..
+                }) = self.tokens.get(self.position)
+                {
+                    if else_keyword == "else" {
+                        self.position += 1;
+                        if let Some(Token {
+                            kind: TokenKind::LBrace,
+                            ..
+                        }) = self.tokens.get(self.position)
+                        {
+                            self.position += 1;
+                            let mut alt = Vec::new();
+                            while self.tokens.get(self.position).map(|t| &t.kind)
+                                != Some(&TokenKind::RBrace)
+                            {
+                                if let Some(stmt) = self.parse_statement() {
+                                    alt.push(stmt);
+                                }
+                            }
+                            self.position += 1; // Skip '}'
+                            Some(alt)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                return Some(Statement::If(condition, consequence, alternative));
+            }
+        }
+        None
+    }
+
     fn parse_expression(&mut self) -> Option<Expression> {
         let mut left = self.parse_term()?;
-        while let Some(token) = self.tokens.get(self.position) {
-            match token {
-                Token::Plus => {
-                    self.position += 1;
-                    let right = self.parse_term()?;
-                    left = Expression::BinaryOp(Box::new(left), "+".to_string(), Box::new(right));
-                }
-                _ => break,
-            }
+        while let Some(Token {
+            kind: TokenKind::Operator(op),
+            ..
+        }) = self.tokens.clone().get(self.position)
+        {
+            self.position += 1;
+            let right = self.parse_term()?;
+            left = Expression::BinaryOp(Box::new(left), op.clone(), Box::new(right));
         }
         Some(left)
     }
 
     fn parse_term(&mut self) -> Option<Expression> {
         match self.tokens.get(self.position).cloned() {
-            Some(Token::Number(num)) => {
+            Some(Token {
+                kind: TokenKind::Number(num),
+                ..
+            }) => {
                 self.position += 1;
                 Some(Expression::Number(num))
             }
-            Some(Token::Identifier(name)) => {
+            Some(Token {
+                kind: TokenKind::StringLiteral(string),
+                ..
+            }) => {
+                self.position += 1;
+                Some(Expression::StringLiteral(string))
+            }
+            Some(Token {
+                kind: TokenKind::Identifier(name),
+                ..
+            }) => {
                 self.position += 1;
                 let mut expr = Expression::Variable(name.clone());
                 while let Some(token) = self.tokens.get(self.position).cloned() {
-                    match token {
-                        Token::Dot => {
+                    match token.kind {
+                        TokenKind::Dot => {
                             self.position += 1; // Skip '.'
-                            if let Some(Token::Identifier(field)) =
-                                self.tokens.get(self.position).cloned()
+                            if let Some(Token {
+                                kind: TokenKind::Identifier(field),
+                                ..
+                            }) = self.tokens.get(self.position).cloned()
                             {
                                 self.position += 1;
                                 expr = Expression::ObjectAccess(Box::new(expr), field);
                             }
                         }
-                        Token::LParen => {
+                        TokenKind::LParen => {
                             self.position += 1; // Skip '('
                             let mut args = Vec::new();
-                            while self.tokens.get(self.position) != Some(&Token::RParen) {
+                            while self.tokens.get(self.position).map(|t| &t.kind)
+                                != Some(&TokenKind::RParen)
+                            {
                                 if let Some(arg) = self.parse_expression() {
                                     args.push(arg);
-                                    if let Some(Token::Comma) = self.tokens.get(self.position) {
+                                    if let Some(Token {
+                                        kind: TokenKind::Comma,
+                                        ..
+                                    }) = self.tokens.get(self.position)
+                                    {
                                         self.position += 1; // Skip ','
                                     }
                                 }
                             }
-                            self.position += 1; // Skip ')'
-                            expr = Expression::FunctionCall(name.clone(), args);
+                            if self.tokens.get(self.position).map(|t| &t.kind)
+                                == Some(&TokenKind::RParen)
+                            {
+                                self.position += 1; // Skip ')'
+                                expr = Expression::FunctionCall(name.clone(), args);
+                            } else {
+                                self.print_error("unmatched '('");
+                                std::process::exit(1);
+                            }
                         }
                         _ => break,
                     }
                 }
                 Some(expr)
             }
-            Some(Token::LBrace) => {
+            Some(Token {
+                kind: TokenKind::LBrace,
+                ..
+            }) => {
                 self.position += 1; // Skip '{'
                 let mut fields = HashMap::new();
-                while self.tokens.get(self.position) != Some(&Token::RBrace) {
-                    if let Some(Token::Identifier(key)) = self.tokens.get(self.position).cloned() {
+                while self.tokens.get(self.position).map(|t| &t.kind) != Some(&TokenKind::RBrace) {
+                    if let Some(Token {
+                        kind: TokenKind::Identifier(key),
+                        ..
+                    }) = self.tokens.get(self.position).cloned()
+                    {
                         self.position += 1;
-                        if let Some(Token::Colon) = self.tokens.get(self.position) {
+                        if let Some(Token {
+                            kind: TokenKind::Colon,
+                            ..
+                        }) = self.tokens.get(self.position)
+                        {
                             self.position += 1;
                             if let Some(value) = self.parse_expression() {
                                 fields.insert(key, value);
-                                if let Some(Token::Comma) = self.tokens.get(self.position) {
+                                if let Some(Token {
+                                    kind: TokenKind::Comma,
+                                    ..
+                                }) = self.tokens.get(self.position)
+                                {
                                     self.position += 1;
                                 }
                             }
                         }
                     }
                 }
-                self.position += 1; // Skip '}'
-                Some(Expression::Object(fields))
+                if self.tokens.get(self.position).map(|t| &t.kind) == Some(&TokenKind::RBrace) {
+                    self.position += 1; // Skip '}'
+                    Some(Expression::Object(fields))
+                } else {
+                    self.print_error("unmatched '{'");
+                    std::process::exit(1);
+                }
             }
-            _ => None,
+            Some(Token {
+                kind: TokenKind::LParen,
+                ..
+            }) => {
+                self.position += 1; // Skip '('
+                let expr = self.parse_expression();
+                if self.tokens.get(self.position).map(|t| &t.kind) == Some(&TokenKind::RParen) {
+                    self.position += 1; // Skip ')'
+                    expr
+                } else {
+                    self.print_error("unmatched '('");
+                    std::process::exit(1);
+                }
+            }
+            _ => {
+                self.print_error("Error parsing expression");
+                std::process::exit(1);
+            }
         }
+    }
+
+    fn print_error(&self, message: &str) {
+        let token = self.tokens.get(self.position).unwrap();
+        let line = token.line;
+        let column = token.column;
+        let line_content = self.lexer.get_line_content(line);
+        info!(
+            "Error: {} at line {}, column {}\n{}\n{}",
+            message,
+            line,
+            column,
+            line_content,
+            " ".repeat(column - 1) + "^"
+        );
     }
 }
 
 struct Interpreter {
     variables: HashMap<String, Value>,
+    string_literals: HashMap<String, String>, // 新增 string_literals 字段
 }
 
 impl Interpreter {
     fn new() -> Self {
         Self {
             variables: HashMap::new(),
+            string_literals: HashMap::new(), // 初始化 string_literals
         }
     }
 
-    fn execute_statements(&mut self, statements: Vec<Statement>) {
+    fn execute_statements(&mut self, statements: Vec<Statement>) -> Option<Value> {
         for statement in statements {
-            self.execute_statement(statement);
+            if let Some(value) = self.execute_statement(statement) {
+                return Some(value);
+            }
         }
+        None
     }
 
-    fn execute_statement(&mut self, statement: Statement) {
-        println!("Executing: {:?}", statement);
+    fn execute_statement(&mut self, statement: Statement) -> Option<Value> {
+        info!("Executing: {:?}", statement);
         match statement {
             Statement::Let(name, expr) => {
                 let value = self.evaluate_expression(expr);
-                self.variables.insert(name, value);
+                match value {
+                    Value::StringLiteral(ref unique_name) => {
+                        self.variables
+                            .insert(name.clone(), Value::StringLiteral(unique_name.to_string()));
+                    }
+                    _ => {
+                        self.variables.insert(name, value);
+                    }
+                }
+                None
             }
             Statement::FunctionDef(name, params, body) => {
                 self.variables.insert(name, Value::Function(params, body));
+                None
             }
             Statement::Expression(expr) => {
-                let result = self.evaluate_expression(expr);
-                println!("Result: {:?}", result);
+                let value = self.evaluate_expression(expr.clone());
+                match value {
+                    Value::StringLiteral(ref unique_name) => {
+                        if let Expression::Variable(ref name) = expr {
+                            self.variables.insert(
+                                name.clone(),
+                                Value::StringLiteral(unique_name.to_string()),
+                            );
+                        }
+                    }
+                    _ => (),
+                }
+                if let Expression::Variable(name) = expr {
+                    if name.starts_with("__str_") && !self.variables.contains_key(&name) {
+                        self.variables.insert(name, value);
+                    }
+                }
+                None
+            }
+            Statement::Assignment(left, right) => {
+                let value = self.evaluate_expression(right);
+                match left {
+                    Expression::Variable(name) => {
+                        self.variables.insert(name, value);
+                    }
+                    Expression::ObjectAccess(object_expr, key) => {
+                        if let Value::Object(mut map) = self.evaluate_expression(*object_expr) {
+                            map.insert(key, value);
+                        } else {
+                            panic!("Assignment to a non-object value");
+                        }
+                    }
+                    _ => panic!("Invalid assignment target"),
+                }
+                None
+            }
+            Statement::If(condition, consequence, alternative) => {
+                if let Value::Number(cond) = self.evaluate_expression(condition) {
+                    if cond != 0 {
+                        self.execute_statements(consequence)
+                    } else if let Some(alt) = alternative {
+                        self.execute_statements(alt)
+                    } else {
+                        None
+                    }
+                } else {
+                    panic!("Condition must be a number");
+                }
+            }
+            Statement::Return(expr) => {
+                let result = self.evaluate_expression(expr.clone());
+                if let Value::StringLiteral(ref unique_name) = result {
+                    if let Expression::Variable(name) = expr {
+                        self.variables
+                            .insert(name, Value::StringLiteral(unique_name.to_string()));
+                    }
+                }
+                return Some(result);
             }
         }
     }
 
-    fn evaluate_expression(&self, expr: Expression) -> Value {
+    fn generate_unique_name(&mut self, string: &str) -> String {
+        let mut hasher = DefaultHasher::new();
+        string.hash(&mut hasher);
+        let hash = hasher.finish();
+        let unique_name = format!("__str_{}__", hash);
+        self.string_literals
+            .entry(unique_name.clone())
+            .or_insert(string.to_string());
+        unique_name
+    }
+
+    fn evaluate_expression(&mut self, expr: Expression) -> Value {
         match expr {
             Expression::Number(num) => Value::Number(num),
-            Expression::Variable(name) => self
-                .variables
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| panic!("Variable {} not found", name)),
+            Expression::StringLiteral(string) => {
+                info!("evaluate string: {}", string);
+                let unique_name = self.generate_unique_name(&string);
+                info!("unique_name: {}", unique_name);
+                Value::StringLiteral(unique_name)
+            }
+            Expression::Variable(name) => {
+                info!("evaluate variable: {}", name);
+                self.variables
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("Variable {} not found", name))
+            }
             Expression::Object(fields) => {
                 let mut object = HashMap::new();
                 for (key, value_expr) in fields {
@@ -359,31 +898,122 @@ impl Interpreter {
                     (Value::Number(left_num), Value::Number(right_num)) => {
                         let result = match op.as_str() {
                             "+" => left_num + right_num,
+                            "-" => left_num - right_num,
+                            "*" => left_num * right_num,
+                            "/" => left_num / right_num,
+                            ">" => (left_num > right_num) as i32,
+                            "<" => (left_num < right_num) as i32,
+                            ">=" => (left_num >= right_num) as i32,
+                            "<=" => (left_num <= right_num) as i32,
+                            "==" => (left_num == right_num) as i32,
+                            "!=" => (left_num != right_num) as i32,
                             _ => panic!("Unsupported operator: {}", op),
                         };
                         Value::Number(result)
+                    }
+                    (Value::StringLiteral(left_str), Value::StringLiteral(right_str)) => {
+                        if op == "+" {
+                            let left_real_str = self.string_literals.get(&left_str).unwrap();
+                            let right_real_str = self.string_literals.get(&right_str).unwrap();
+                            let combined_str = left_real_str.clone() + right_real_str;
+                            let unique_name = self.generate_unique_name(&combined_str);
+                            Value::StringLiteral(unique_name)
+                        } else {
+                            panic!("Unsupported operator for strings: {}", op)
+                        }
                     }
                     _ => panic!("Type error in binary operation"),
                 }
             }
             Expression::FunctionCall(name, args) => {
-                let func = self.variables.get(&name).cloned().unwrap();
-                if let Value::Function(params, body) = func {
-                    let mut local_context = self.variables.clone();
-                    for (param, arg) in params.iter().zip(args) {
-                        let arg_value = self.evaluate_expression(arg);
-                        local_context.insert(param.clone(), arg_value);
+                if name == "print" {
+                    if let Some(Expression::Variable(format_string)) = args.get(0) {
+                        match self.variables.get(format_string) {
+                            Some(Value::StringLiteral(string)) => {
+                                println!(
+                                    "variable name: {} , string name: {}",
+                                    format_string, string
+                                );
+                                let format_string = self.string_literals.get(string).unwrap();
+                                println!("for functionCall {}", format_string);
+                            }
+                            _ => (),
+                        }
+                        let format_string = self.variables.get(format_string).unwrap().to_string();
+                        let mut formatted_string = format_string.clone();
+                        for (_, arg) in args.iter().skip(1).enumerate() {
+                            let value = self.evaluate_expression(arg.clone());
+                            match value {
+                                Value::Number(num) => {
+                                    formatted_string = formatted_string
+                                        .replace(&format!("{{}}"), &format!("{}", num));
+                                }
+                                Value::StringLiteral(string) => {
+                                    println!("string: {}", string);
+                                    formatted_string = formatted_string
+                                        .replace(&format!("{{}}"), &format!("{}", string));
+                                }
+                                Value::Object(map) => {
+                                    let fields: Vec<String> = map
+                                        .iter()
+                                        .map(|(key, value)| format!("{}: {:?}", key, value))
+                                        .collect();
+                                    formatted_string = formatted_string.replace(
+                                        &format!("{{}}"),
+                                        &format!("{{{}}}", fields.join(", ")),
+                                    );
+                                }
+                                _ => panic!("Unsupported type in print statement"),
+                            }
+                        }
+                        println!("{}", formatted_string);
+                    } else {
+                        for arg in args {
+                            let value = self.evaluate_expression(arg);
+                            println!("function parameters: {:?}", value);
+                            self.print_value(value);
+                        }
+                        println!();
                     }
-                    let mut interpreter = Interpreter {
-                        variables: local_context,
-                    };
-                    interpreter.execute_statements(body);
-                    Value::Number(0) // For now, return 0 for function calls
+                    Value::Number(0)
                 } else {
-                    panic!("Function {} not found", name);
+                    let func = self.variables.get(&name).cloned().unwrap();
+                    if let Value::Function(params, body) = func {
+                        let mut local_context = self.variables.clone();
+                        for (param, arg) in params.iter().zip(args) {
+                            let arg_value = self.evaluate_expression(arg);
+                            local_context.insert(param.clone(), arg_value);
+                        }
+                        let mut interpreter = Interpreter {
+                            variables: local_context,
+                            string_literals: self.string_literals.clone(), // 传递 string_literals
+                        };
+                        interpreter
+                            .execute_statements(body)
+                            .unwrap_or(Value::Number(0)) // Return the function's return value or 0 if none
+                    } else {
+                        panic!("Function {} not found", name);
+                    }
                 }
             }
-            _ => unimplemented!(),
+        }
+    }
+
+    fn print_value(&self, value: Value) {
+        match value {
+            Value::Number(num) => print!("{}", num),
+            Value::StringLiteral(name) => {
+                let string_value = self.string_literals.get(&name).unwrap();
+                print!("{}", string_value);
+            }
+            Value::Object(map) => {
+                let fields: Vec<String> = map
+                    .iter()
+                    .map(|(key, value)| format!("{}: {:?}", key, value))
+                    .collect();
+                print!("{{{}}}", fields.join(", "));
+            }
+            _ => panic!("Unsupported type in print statement"),
         }
     }
 }
@@ -391,21 +1021,30 @@ impl Interpreter {
 fn main() {
     let code = r#"
         let obj = { x: 10, y: 20 };
-        obj.x + obj.y;
         function myfun(x, y) {
-            return x + y;
+            if (x>y) {
+                return x - y;
+            } else {
+                return x + y;
+            }
         }
-        myfun(obj.x+100, obj.y);
+        function greet(name) {
+            return "Hello, " + name + "!";
+        }
+        let aaa=myfun(obj.x+100, obj.y);
+        let greeting = greet("World");
+        print("var: ", aaa + 12);
+        print("var: ", aaa);
+        print("var: ", obj.y);
+        print("var: ", aaa - obj.y);
+        print(greeting);
     "#;
-
     let mut lexer = Lexer::new(code);
-    let tokens: Vec<Token> = std::iter::from_fn(|| lexer.next_token()).collect();
-    println!("Tokens: {:?}", tokens);
-
-    let mut parser = Parser::new(tokens);
+    let tokens: Rc<Vec<Token>> = Rc::new(std::iter::from_fn(|| lexer.next_token()).collect());
+    // println!("Tokens: {:?}", tokens);
+    let mut parser = Parser::new(tokens, lexer);
     let statements = parser.parse_statements();
-    println!("Statements: {:?}", statements);
-
+    // println!("Statements: {:?}", statements);
     let mut interpreter = Interpreter::new();
     interpreter.execute_statements(statements);
 }
