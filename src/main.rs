@@ -837,13 +837,13 @@ impl Interpreter {
             }
             Statement::Return(expr) => {
                 let result = self.evaluate_expression(expr.clone());
+                // 对于返回值是字符串的情况，确保在返回前字符串已经被正确保存
                 if let Value::StringLiteral(ref unique_name) = result {
                     if let Expression::Variable(name) = expr {
-                        self.variables
-                            .insert(name, Value::StringLiteral(unique_name.to_string()));
+                        self.variables.insert(name, Value::StringLiteral(unique_name.to_string()));
                     }
                 }
-                return Some(result);
+                Some(result)
             }
         }
     }
@@ -997,9 +997,18 @@ impl Interpreter {
                             variables: local_context,
                             string_literals: self.string_literals.clone(), // 传递 string_literals
                         };
-                        interpreter
-                            .execute_statements(body)
-                            .unwrap_or(Value::Number(0)) // Return the function's return value or 0 if none
+                        
+                        // 获取函数返回值
+                        let result = interpreter.execute_statements(body).unwrap_or(Value::Number(0));
+                        
+                        // 如果返回值是字符串，需要将其复制到当前解释器的 string_literals 中
+                        if let Value::StringLiteral(unique_name) = &result {
+                            if let Some(str_value) = interpreter.string_literals.get(unique_name) {
+                                self.string_literals.insert(unique_name.clone(), str_value.clone());
+                            }
+                        }
+                        
+                        result
                     } else {
                         panic!("Function {} not found", name);
                     }
