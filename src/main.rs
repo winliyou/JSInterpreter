@@ -1071,37 +1071,92 @@ fn read_file(path: &Path) -> io::Result<String> {
     fs::read_to_string(path)
 }
 
+fn is_balanced(input: &str) -> bool {
+    let mut stack = Vec::new();
+    let mut in_string = false;
+
+    for c in input.chars() {
+        match c {
+            '"' => in_string = !in_string,
+            '{' | '(' if !in_string => stack.push(c),
+            '}' if !in_string => {
+                if stack.pop() != Some('{') {
+                    return false;
+                }
+            }
+            ')' if !in_string => {
+                if stack.pop() != Some('(') {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    !in_string && stack.is_empty()
+}
+
 fn main() {
-    // 获取命令行参数
     let args: Vec<String> = env::args().collect();
 
-    // 如果没有提供文件参数，进入交互式模式
     if args.len() < 2 {
-        println!("Interactive mode. Enter code or 'exit' to quit.");
+        println!("Interactive mode. Enter code or 'exit()' to quit.");
+        println!("Use Ctrl+D to exit. Multi-line input is supported.");
         let mut interpreter = Interpreter::new();
 
-        loop {
-            print!("> ");
-            io::stdout().flush().unwrap();
-
+        'repl: loop {
             let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
+            let mut is_first_line = true;
+            
+            loop {
+                if is_first_line {
+                    print!("> ");
+                } else {
+                    print!("... ");
+                }
+                io::stdout().flush().unwrap();
 
-            let input = input.trim();
-            if input == "exit" {
-                break;
+                let mut line = String::new();
+                match io::stdin().read_line(&mut line) {
+                    Ok(0) => {
+                        println!("\nGoodbye!"); // Ctrl+D was pressed
+                        break 'repl;
+                    }
+                    Ok(_) => {
+                        if line.trim() == "exit()" {
+                            println!("Goodbye!");
+                            break 'repl;
+                        }
+                        
+                        // 只在第一行是空白行时特殊处理
+                        if is_first_line && line.trim().is_empty() {
+                            break;
+                        }
+                        
+                        input.push_str(&line);
+                        
+                        // 如果输入平衡了，就执行代码
+                        if is_balanced(&input) {
+                            // 确保输入不是空的
+                            if !input.trim().is_empty() {
+                                let mut lexer = Lexer::new(&input);
+                                let tokens: Rc<Vec<Token>> = Rc::new(
+                                    std::iter::from_fn(|| lexer.next_token()).collect()
+                                );
+                                let mut parser = Parser::new(tokens, lexer);
+                                let statements = parser.parse_statements();
+                                interpreter.execute_statements(statements);
+                            }
+                            break;
+                        }
+                        
+                        is_first_line = false;
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading input: {}", e);
+                        break;
+                    }
+                }
             }
-
-            if input.is_empty() {
-                continue;
-            }
-
-            let mut lexer = Lexer::new(input);
-            let tokens: Rc<Vec<Token>> =
-                Rc::new(std::iter::from_fn(|| lexer.next_token()).collect());
-            let mut parser = Parser::new(tokens, lexer);
-            let statements = parser.parse_statements();
-            interpreter.execute_statements(statements);
         }
         return;
     }
