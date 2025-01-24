@@ -40,7 +40,7 @@ enum BuiltInCatalog {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum OperatorCatalog {
+enum BinaryOperatorCatalog {
     Plus,
     Minus,
     Multiply,
@@ -51,6 +51,12 @@ enum OperatorCatalog {
     LessEqual,
     Equal,
     NotEqual,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum UnaryOperatorCatalog {
+    SelfPlus,
+    SelfMinus,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,7 +72,8 @@ enum TokenKind {
     StringLiteral(String),
     Keyword(KeywordCatalog),
     BuiltIn(BuiltInCatalog),
-    Operator(OperatorCatalog),
+    BinaryOperator(BinaryOperatorCatalog),
+    UnaryOperator(UnaryOperatorCatalog),
     LParen,
     RParen,
     Dot,
@@ -80,9 +87,9 @@ enum Expression {
     Variable(String),
     Object(HashMap<String, Expression>),
     ObjectAccess(Box<Expression>, String),
-    BinaryOp(Box<Expression>, OperatorCatalog, Box<Expression>),
+    BinaryOp(Box<Expression>, BinaryOperatorCatalog, Box<Expression>),
     FunctionCall(String, Vec<Expression>),
-    UnaryOp(String, Box<Expression>),
+    UnaryOp(UnaryOperatorCatalog, Box<Expression>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,13 +181,13 @@ impl Lexer {
                         self.position += 1;
                         self.column += 1;
                         Some(self.create_token(
-                            TokenKind::Operator(OperatorCatalog::Plus),
+                            TokenKind::UnaryOperator(UnaryOperatorCatalog::SelfPlus),
                             token_start_line,
                             token_start_column,
                         ))
                     } else {
                         Some(self.create_token(
-                            TokenKind::Operator(OperatorCatalog::Plus),
+                            TokenKind::BinaryOperator(BinaryOperatorCatalog::Plus),
                             token_start_line,
                             token_start_column,
                         ))
@@ -191,25 +198,25 @@ impl Lexer {
                         self.position += 1;
                         self.column += 1;
                         Some(self.create_token(
-                            TokenKind::Operator(OperatorCatalog::Minus),
+                            TokenKind::UnaryOperator(UnaryOperatorCatalog::SelfMinus),
                             token_start_line,
                             token_start_column,
                         ))
                     } else {
                         Some(self.create_token(
-                            TokenKind::Operator(OperatorCatalog::Minus),
+                            TokenKind::BinaryOperator(BinaryOperatorCatalog::Minus),
                             token_start_line,
                             token_start_column,
                         ))
                     }
                 }
                 '*' => Some(self.create_token(
-                    TokenKind::Operator(OperatorCatalog::Multiply),
+                    TokenKind::BinaryOperator(BinaryOperatorCatalog::Multiply),
                     token_start_line,
                     token_start_column,
                 )),
                 '/' => Some(self.create_token(
-                    TokenKind::Operator(OperatorCatalog::Divide),
+                    TokenKind::BinaryOperator(BinaryOperatorCatalog::Divide),
                     token_start_line,
                     token_start_column,
                 )),
@@ -248,7 +255,11 @@ impl Lexer {
         if let Some(&'=') = self.input.get(self.position) {
             self.position += 1;
             self.column += 1;
-            Some(self.create_token(TokenKind::Operator(OperatorCatalog::Equal), line, column))
+            Some(self.create_token(
+                TokenKind::BinaryOperator(BinaryOperatorCatalog::Equal),
+                line,
+                column,
+            ))
         } else {
             Some(self.create_token(TokenKind::Equals, line, column))
         }
@@ -259,13 +270,13 @@ impl Lexer {
             self.position += 1;
             self.column += 1;
             Some(self.create_token(
-                TokenKind::Operator(OperatorCatalog::GreaterEqual),
+                TokenKind::BinaryOperator(BinaryOperatorCatalog::GreaterEqual),
                 line,
                 column,
             ))
         } else {
             Some(self.create_token(
-                TokenKind::Operator(OperatorCatalog::GreaterThan),
+                TokenKind::BinaryOperator(BinaryOperatorCatalog::GreaterThan),
                 line,
                 column,
             ))
@@ -277,12 +288,16 @@ impl Lexer {
             self.position += 1;
             self.column += 1;
             Some(self.create_token(
-                TokenKind::Operator(OperatorCatalog::LessEqual),
+                TokenKind::BinaryOperator(BinaryOperatorCatalog::LessEqual),
                 line,
                 column,
             ))
         } else {
-            Some(self.create_token(TokenKind::Operator(OperatorCatalog::LessThan), line, column))
+            Some(self.create_token(
+                TokenKind::BinaryOperator(BinaryOperatorCatalog::LessThan),
+                line,
+                column,
+            ))
         }
     }
 
@@ -290,7 +305,11 @@ impl Lexer {
         if let Some(&'=') = self.input.get(self.position) {
             self.position += 1;
             self.column += 1;
-            Some(self.create_token(TokenKind::Operator(OperatorCatalog::NotEqual), line, column))
+            Some(self.create_token(
+                TokenKind::BinaryOperator(BinaryOperatorCatalog::NotEqual),
+                line,
+                column,
+            ))
         } else {
             Some(self.create_token(TokenKind::Unknown('!'), line, column))
         }
@@ -485,7 +504,10 @@ impl Parser {
         info!("current token is {:?}", self.tokens.get(self.position));
         if let Some(expr) = self.parse_expression() {
             match expr {
-                Expression::UnaryOp(op, expr) if op == "++" || op == "--" => {
+                Expression::UnaryOp(op, expr)
+                    if op == UnaryOperatorCatalog::SelfMinus
+                        || op == UnaryOperatorCatalog::SelfPlus =>
+                {
                     if let Some(Token {
                         kind: TokenKind::Semicolon,
                         ..
@@ -745,7 +767,7 @@ impl Parser {
     fn parse_expression(&mut self) -> Option<Expression> {
         let mut left = self.parse_term()?;
         while let Some(Token {
-            kind: TokenKind::Operator(op),
+            kind: TokenKind::BinaryOperator(op),
             ..
         }) = self.tokens.clone().get(self.position)
         {
@@ -759,12 +781,12 @@ impl Parser {
     fn parse_term(&mut self) -> Option<Expression> {
         match self.tokens.get(self.position).cloned() {
             Some(Token {
-                kind: TokenKind::Operator(op),
+                kind: TokenKind::UnaryOperator(op),
                 ..
-            }) if op == OperatorCatalog::Plus || op == OperatorCatalog::Minus => {
+            }) => {
                 self.position += 1;
                 let expr = self.parse_term()?;
-                Some(Expression::UnaryOp(format!("{:?}", op), Box::new(expr)))
+                Some(Expression::UnaryOp(op, Box::new(expr)))
             }
             Some(Token {
                 kind: TokenKind::Number(num),
@@ -1114,21 +1136,21 @@ impl Interpreter {
                 match (left_value, right_value) {
                     (Value::Number(left_num), Value::Number(right_num)) => {
                         let result = match op {
-                            OperatorCatalog::Plus => left_num + right_num,
-                            OperatorCatalog::Minus => left_num - right_num,
-                            OperatorCatalog::Multiply => left_num * right_num,
-                            OperatorCatalog::Divide => left_num / right_num,
-                            OperatorCatalog::GreaterThan => (left_num > right_num) as i32,
-                            OperatorCatalog::LessThan => (left_num < right_num) as i32,
-                            OperatorCatalog::GreaterEqual => (left_num >= right_num) as i32,
-                            OperatorCatalog::LessEqual => (left_num <= right_num) as i32,
-                            OperatorCatalog::Equal => (left_num == right_num) as i32,
-                            OperatorCatalog::NotEqual => (left_num != right_num) as i32,
+                            BinaryOperatorCatalog::Plus => left_num + right_num,
+                            BinaryOperatorCatalog::Minus => left_num - right_num,
+                            BinaryOperatorCatalog::Multiply => left_num * right_num,
+                            BinaryOperatorCatalog::Divide => left_num / right_num,
+                            BinaryOperatorCatalog::GreaterThan => (left_num > right_num) as i32,
+                            BinaryOperatorCatalog::LessThan => (left_num < right_num) as i32,
+                            BinaryOperatorCatalog::GreaterEqual => (left_num >= right_num) as i32,
+                            BinaryOperatorCatalog::LessEqual => (left_num <= right_num) as i32,
+                            BinaryOperatorCatalog::Equal => (left_num == right_num) as i32,
+                            BinaryOperatorCatalog::NotEqual => (left_num != right_num) as i32,
                         };
                         Value::Number(result)
                     }
                     (Value::StringLiteral(left_str), Value::StringLiteral(right_str)) => {
-                        if let OperatorCatalog::Plus = op {
+                        if let BinaryOperatorCatalog::Plus = op {
                             let left_real_str = self.string_literals.get(&left_str).unwrap();
                             let right_real_str = self.string_literals.get(&right_str).unwrap();
                             let combined_str = format!("{}{}", left_real_str, right_real_str);
@@ -1237,19 +1259,18 @@ impl Interpreter {
             Expression::UnaryOp(op, expr) => match &*expr {
                 Expression::Variable(name) => {
                     if let Some(Value::Number(num)) = self.variables.get(name) {
-                        let new_value = match op.as_str() {
-                            "++" => num + 1,
-                            "--" => num - 1,
-                            _ => panic!("Unsupported unary operator: {}", op),
+                        let new_value = match op {
+                            UnaryOperatorCatalog::SelfPlus => num + 1,
+                            UnaryOperatorCatalog::SelfMinus => num - 1,
                         };
                         self.variables
                             .insert(name.clone(), Value::Number(new_value));
                         Value::Number(new_value)
                     } else {
-                        panic!("Cannot apply {} to non-numeric variable {}", op, name)
+                        panic!("Cannot apply {:?} to non-numeric variable {}", op, name)
                     }
                 }
-                _ => panic!("Cannot apply {} to non-variable expression", op),
+                _ => panic!("Cannot apply {:?} to non-variable expression", op),
             },
         }
     }
