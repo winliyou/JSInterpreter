@@ -1,7 +1,10 @@
 use log::info;
-use std::clone;
 use std::collections::hash_map::DefaultHasher;
+use std::env;
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::{self, Write};
+use std::path::Path;
 use std::{
     collections::HashMap,
     fmt::{self, Display, Formatter},
@@ -248,7 +251,7 @@ impl Lexer {
     fn handle_number(&mut self, ch: char, line: usize, column: usize) -> Option<Token> {
         let mut num = ch.to_string();
         while let Some(&next) = self.input.get(self.position) {
-            if next.is_digit(10) {
+            if next.is_ascii_digit() {
                 num.push(next);
                 self.position += 1;
                 self.column += 1;
@@ -324,8 +327,8 @@ impl Parser {
         }
     }
 
-    fn handle_keyword(&mut self, keyword: &String) -> Option<Statement> {
-        match keyword.as_str() {
+    fn handle_keyword(&mut self, keyword: &str) -> Option<Statement> {
+        match keyword {
             "let" => self.parse_let(),
             "function" => self.parse_function(),
             "return" => self.parse_return(),
@@ -732,7 +735,7 @@ impl Parser {
         let line = token.line;
         let column = token.column;
         let line_content = self.lexer.get_line_content(line);
-        info!(
+        eprintln!(
             "Error: {} at line {}, column {}\n{}\n{}",
             message,
             line,
@@ -757,12 +760,12 @@ impl Interpreter {
     }
 
     fn execute_statements(&mut self, statements: Vec<Statement>) -> Option<Value> {
+        let mut last_value = None;
         for statement in statements {
-            if let Some(value) = self.execute_statement(statement) {
-                return Some(value);
-            }
+            last_value = self.execute_statement(statement);
+            // 不要在这里直接返回，让所有语句都能执行
         }
-        None
+        last_value
     }
 
     fn execute_statement(&mut self, statement: Statement) -> Option<Value> {
@@ -770,10 +773,17 @@ impl Interpreter {
         match statement {
             Statement::Let(name, expr) => {
                 let value = self.evaluate_expression(expr);
-                match value {
+                match &value {
                     Value::StringLiteral(ref unique_name) => {
-                        self.variables
-                            .insert(name.clone(), Value::StringLiteral(unique_name.to_string()));
+                        // 存储字符串字面量到变量中
+                        self.variables.insert(name, value.clone());
+                        // 将实际字符串内容存储到 string_literals
+                        if !self.string_literals.contains_key(unique_name) {
+                            if let Some(str_value) = self.string_literals.get(unique_name) {
+                                self.string_literals
+                                    .insert(unique_name.clone(), str_value.clone());
+                            }
+                        }
                     }
                     _ => {
                         self.variables.insert(name, value);
@@ -785,22 +795,16 @@ impl Interpreter {
                 self.variables.insert(name, Value::Function(params, body));
                 None
             }
+            Statement::Expression(Expression::FunctionCall(name, args)) if name == "print" => {
+                self.handle_builtin_print_call(args);
+                None
+            }
             Statement::Expression(expr) => {
                 let value = self.evaluate_expression(expr.clone());
-                match value {
-                    Value::StringLiteral(ref unique_name) => {
-                        if let Expression::Variable(ref name) = expr {
-                            self.variables.insert(
-                                name.clone(),
-                                Value::StringLiteral(unique_name.to_string()),
-                            );
-                        }
-                    }
-                    _ => (),
-                }
-                if let Expression::Variable(name) = expr {
-                    if name.starts_with("__str_") && !self.variables.contains_key(&name) {
-                        self.variables.insert(name, value);
+                if let Value::StringLiteral(ref unique_name) = value {
+                    if let Expression::Variable(ref name) = expr {
+                        self.variables
+                            .insert(name.clone(), Value::StringLiteral(unique_name.to_string()));
                     }
                 }
                 None
@@ -840,12 +844,53 @@ impl Interpreter {
                 // 对于返回值是字符串的情况，确保在返回前字符串已经被正确保存
                 if let Value::StringLiteral(ref unique_name) = result {
                     if let Expression::Variable(name) = expr {
-                        self.variables.insert(name, Value::StringLiteral(unique_name.to_string()));
+                        self.variables
+                            .insert(name, Value::StringLiteral(unique_name.to_string()));
                     }
                 }
                 Some(result)
             }
         }
+    }
+
+    fn handle_builtin_print_call(&mut self, args: Vec<Expression>) -> Value {
+        if args.is_empty() {
+            println!();
+            return Value::Number(0);
+        }
+
+        let mut values = Vec::new();
+        for arg in args {
+            let value = self.evaluate_expression(arg.clone());
+            let str_value = match value {
+                Value::Number(num) => num.to_string(),
+                Value::StringLiteral(name) => self.string_literals.get(&name).unwrap().clone(),
+                Value::Object(map) => {
+                    let fields: Vec<String> = map
+                        .iter()
+                        .map(|(key, value)| format!("{}: {}", key, value))
+                        .collect();
+                    format!("{{{}}}", fields.join(", "))
+                }
+                Value::Function(params, _) => format!("function({})", params.join(", ")),
+            };
+            values.push(str_value);
+        }
+
+        // 如果第一个参数包含 {} 占位符，则按照格式化字符串处理
+        if values[0].contains("{}") {
+            let mut format_string = values[0].clone();
+            for value in values.iter().skip(1) {
+                if let Some(pos) = format_string.find("{}") {
+                    format_string.replace_range(pos..pos + 2, value);
+                }
+            }
+            println!("{}", format_string);
+        } else {
+            // 否则直接打印所有参数
+            println!("{}", values.join(" "));
+        }
+        Value::Number(0)
     }
 
     fn generate_unique_name(&mut self, string: &str) -> String {
@@ -915,7 +960,7 @@ impl Interpreter {
                         if op == "+" {
                             let left_real_str = self.string_literals.get(&left_str).unwrap();
                             let right_real_str = self.string_literals.get(&right_str).unwrap();
-                            let combined_str = left_real_str.clone() + right_real_str;
+                            let combined_str = format!("{}{}", left_real_str, right_real_str);
                             let unique_name = self.generate_unique_name(&combined_str);
                             Value::StringLiteral(unique_name)
                         } else {
@@ -932,8 +977,9 @@ impl Interpreter {
                         let format_value = self.evaluate_expression(first_arg.clone());
                         if let Value::StringLiteral(format_name) = format_value {
                             // 获取实际的格式化字符串
-                            let mut format_string = self.string_literals.get(&format_name).unwrap().clone();
-                            
+                            let mut format_string =
+                                self.string_literals.get(&format_name).unwrap().clone();
+
                             // 处理剩余参数
                             for arg in args.iter().skip(1) {
                                 let value = self.evaluate_expression(arg.clone());
@@ -953,10 +999,10 @@ impl Interpreter {
                                         format!("function({})", params.join(", "))
                                     }
                                 };
-                                
+
                                 // 替换第一个 {} 占位符
                                 if let Some(pos) = format_string.find("{}") {
-                                    format_string.replace_range(pos..pos+2, &replacement);
+                                    format_string.replace_range(pos..pos + 2, &replacement);
                                 }
                             }
                             println!("{}", format_string);
@@ -997,17 +1043,20 @@ impl Interpreter {
                             variables: local_context,
                             string_literals: self.string_literals.clone(), // 传递 string_literals
                         };
-                        
+
                         // 获取函数返回值
-                        let result = interpreter.execute_statements(body).unwrap_or(Value::Number(0));
-                        
+                        let result = interpreter
+                            .execute_statements(body)
+                            .unwrap_or(Value::Number(0));
+
                         // 如果返回值是字符串，需要将其复制到当前解释器的 string_literals 中
                         if let Value::StringLiteral(unique_name) = &result {
                             if let Some(str_value) = interpreter.string_literals.get(unique_name) {
-                                self.string_literals.insert(unique_name.clone(), str_value.clone());
+                                self.string_literals
+                                    .insert(unique_name.clone(), str_value.clone());
                             }
                         }
-                        
+
                         result
                     } else {
                         panic!("Function {} not found", name);
@@ -1018,33 +1067,60 @@ impl Interpreter {
     }
 }
 
+fn read_file(path: &Path) -> io::Result<String> {
+    fs::read_to_string(path)
+}
+
 fn main() {
-    let code = r#"
-        let obj = { x: 10, y: 20 };
-        function myfun(x, y) {
-            if (x>y) {
-                return x - y;
-            } else {
-                return x + y;
+    // 获取命令行参数
+    let args: Vec<String> = env::args().collect();
+
+    // 如果没有提供文件参数，进入交互式模式
+    if args.len() < 2 {
+        println!("Interactive mode. Enter code or 'exit' to quit.");
+        let mut interpreter = Interpreter::new();
+
+        loop {
+            print!("> ");
+            io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+
+            let input = input.trim();
+            if input == "exit" {
+                break;
             }
+
+            if input.is_empty() {
+                continue;
+            }
+
+            let mut lexer = Lexer::new(input);
+            let tokens: Rc<Vec<Token>> =
+                Rc::new(std::iter::from_fn(|| lexer.next_token()).collect());
+            let mut parser = Parser::new(tokens, lexer);
+            let statements = parser.parse_statements();
+            interpreter.execute_statements(statements);
         }
-        function greet(name) {
-            return "Hello, " + name + "!";
+        return;
+    }
+
+    // 从文件读取代码
+    let file_path = Path::new(&args[1]);
+    match read_file(file_path) {
+        Ok(code) => {
+            let mut lexer = Lexer::new(&code);
+            let tokens: Rc<Vec<Token>> =
+                Rc::new(std::iter::from_fn(|| lexer.next_token()).collect());
+            let mut parser = Parser::new(tokens, lexer);
+            let statements = parser.parse_statements();
+            let mut interpreter = Interpreter::new();
+            interpreter.execute_statements(statements);
         }
-        let aaa=myfun(obj.x+100, obj.y);
-        let greeting = greet("World");
-        print("var: {}", aaa + 12);
-        print("var: {}", aaa);
-        print("var: {}", obj.y);
-        print("var: {}", aaa - obj.y);
-        print(greeting);
-    "#;
-    let mut lexer = Lexer::new(code);
-    let tokens: Rc<Vec<Token>> = Rc::new(std::iter::from_fn(|| lexer.next_token()).collect());
-    // println!("Tokens: {:?}", tokens);
-    let mut parser = Parser::new(tokens, lexer);
-    let statements = parser.parse_statements();
-    // println!("Statements: {:?}", statements);
-    let mut interpreter = Interpreter::new();
-    interpreter.execute_statements(statements);
+        Err(e) => {
+            eprintln!("Error reading file: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
