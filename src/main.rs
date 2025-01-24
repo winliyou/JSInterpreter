@@ -25,6 +25,35 @@ impl Display for Token {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+enum KeywordCatalog {
+    Let,
+    Function,
+    If,
+    Else,
+    Return,
+    While,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum BuiltInCatalog {
+    Print,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum OperatorCatalog {
+    Plus,
+    Minus,
+    Multiply,
+    Divide,
+    GreaterThan,
+    LessThan,
+    GreaterEqual,
+    LessEqual,
+    Equal,
+    NotEqual,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum TokenKind {
     LBrace,
     RBrace,
@@ -34,10 +63,10 @@ enum TokenKind {
     Semicolon,
     Identifier(String),
     Number(i32),
-    StringLiteral(String), // 新增 StringLiteral 类型
-    Keyword(String),
-    BuiltIn(String),
-    Operator(String), // 新增 Operator 类型
+    StringLiteral(String),
+    Keyword(KeywordCatalog),
+    BuiltIn(BuiltInCatalog),
+    Operator(OperatorCatalog),
     LParen,
     RParen,
     Dot,
@@ -47,12 +76,13 @@ enum TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 enum Expression {
     Number(i32),
-    StringLiteral(String), // 新增 StringLiteral 类型
+    StringLiteral(String),
     Variable(String),
     Object(HashMap<String, Expression>),
     ObjectAccess(Box<Expression>, String),
-    BinaryOp(Box<Expression>, String, Box<Expression>),
+    BinaryOp(Box<Expression>, OperatorCatalog, Box<Expression>),
     FunctionCall(String, Vec<Expression>),
+    UnaryOp(String, Box<Expression>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,16 +90,17 @@ enum Statement {
     Let(String, Expression),
     FunctionDef(String, Vec<String>, Vec<Statement>),
     Expression(Expression),
-    Assignment(Expression, Expression), // 新增 Assignment 语句类型
-    If(Expression, Vec<Statement>, Option<Vec<Statement>>), // 新增 If 语句类型
-    Return(Expression),                 // 新增 Return 语句类型
+    Assignment(Expression, Expression),
+    If(Expression, Vec<Statement>, Option<Vec<Statement>>),
+    Return(Expression),
+    While(Expression, Vec<Statement>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Value {
     Number(i32),
+    StringLiteral(String),
     Object(HashMap<String, Value>),
-    StringLiteral(String), // 新增 StringLiteral 类型
     Function(Vec<String>, Vec<Statement>),
 }
 
@@ -138,23 +169,47 @@ impl Lexer {
                 ')' => {
                     Some(self.create_token(TokenKind::RParen, token_start_line, token_start_column))
                 }
-                '+' => Some(self.create_token(
-                    TokenKind::Operator("+".to_string()),
-                    token_start_line,
-                    token_start_column,
-                )),
-                '-' => Some(self.create_token(
-                    TokenKind::Operator("-".to_string()),
-                    token_start_line,
-                    token_start_column,
-                )),
+                '+' => {
+                    if let Some(&'+') = self.input.get(self.position) {
+                        self.position += 1;
+                        self.column += 1;
+                        Some(self.create_token(
+                            TokenKind::Operator(OperatorCatalog::Plus),
+                            token_start_line,
+                            token_start_column,
+                        ))
+                    } else {
+                        Some(self.create_token(
+                            TokenKind::Operator(OperatorCatalog::Plus),
+                            token_start_line,
+                            token_start_column,
+                        ))
+                    }
+                }
+                '-' => {
+                    if let Some(&'-') = self.input.get(self.position) {
+                        self.position += 1;
+                        self.column += 1;
+                        Some(self.create_token(
+                            TokenKind::Operator(OperatorCatalog::Minus),
+                            token_start_line,
+                            token_start_column,
+                        ))
+                    } else {
+                        Some(self.create_token(
+                            TokenKind::Operator(OperatorCatalog::Minus),
+                            token_start_line,
+                            token_start_column,
+                        ))
+                    }
+                }
                 '*' => Some(self.create_token(
-                    TokenKind::Operator("*".to_string()),
+                    TokenKind::Operator(OperatorCatalog::Multiply),
                     token_start_line,
                     token_start_column,
                 )),
                 '/' => Some(self.create_token(
-                    TokenKind::Operator("/".to_string()),
+                    TokenKind::Operator(OperatorCatalog::Divide),
                     token_start_line,
                     token_start_column,
                 )),
@@ -193,7 +248,7 @@ impl Lexer {
         if let Some(&'=') = self.input.get(self.position) {
             self.position += 1;
             self.column += 1;
-            Some(self.create_token(TokenKind::Operator("==".to_string()), line, column))
+            Some(self.create_token(TokenKind::Operator(OperatorCatalog::Equal), line, column))
         } else {
             Some(self.create_token(TokenKind::Equals, line, column))
         }
@@ -203,9 +258,17 @@ impl Lexer {
         if let Some(&'=') = self.input.get(self.position) {
             self.position += 1;
             self.column += 1;
-            Some(self.create_token(TokenKind::Operator(">=".to_string()), line, column))
+            Some(self.create_token(
+                TokenKind::Operator(OperatorCatalog::GreaterEqual),
+                line,
+                column,
+            ))
         } else {
-            Some(self.create_token(TokenKind::Operator(">".to_string()), line, column))
+            Some(self.create_token(
+                TokenKind::Operator(OperatorCatalog::GreaterThan),
+                line,
+                column,
+            ))
         }
     }
 
@@ -213,9 +276,13 @@ impl Lexer {
         if let Some(&'=') = self.input.get(self.position) {
             self.position += 1;
             self.column += 1;
-            Some(self.create_token(TokenKind::Operator("<=".to_string()), line, column))
+            Some(self.create_token(
+                TokenKind::Operator(OperatorCatalog::LessEqual),
+                line,
+                column,
+            ))
         } else {
-            Some(self.create_token(TokenKind::Operator("<".to_string()), line, column))
+            Some(self.create_token(TokenKind::Operator(OperatorCatalog::LessThan), line, column))
         }
     }
 
@@ -223,7 +290,7 @@ impl Lexer {
         if let Some(&'=') = self.input.get(self.position) {
             self.position += 1;
             self.column += 1;
-            Some(self.create_token(TokenKind::Operator("!=".to_string()), line, column))
+            Some(self.create_token(TokenKind::Operator(OperatorCatalog::NotEqual), line, column))
         } else {
             Some(self.create_token(TokenKind::Unknown('!'), line, column))
         }
@@ -241,8 +308,13 @@ impl Lexer {
             }
         }
         let kind = match ident.as_str() {
-            "let" | "function" | "if" | "else" | "return" => TokenKind::Keyword(ident),
-            "print" => TokenKind::BuiltIn("print".to_string()),
+            "let" => TokenKind::Keyword(KeywordCatalog::Let),
+            "function" => TokenKind::Keyword(KeywordCatalog::Function),
+            "if" => TokenKind::Keyword(KeywordCatalog::If),
+            "else" => TokenKind::Keyword(KeywordCatalog::Else),
+            "while" => TokenKind::Keyword(KeywordCatalog::While),
+            "return" => TokenKind::Keyword(KeywordCatalog::Return),
+            "print" => TokenKind::BuiltIn(BuiltInCatalog::Print),
             _ => TokenKind::Identifier(ident),
         };
         Some(self.create_token(kind, line, column))
@@ -342,22 +414,28 @@ impl Parser {
     fn parse_statement(&mut self) -> Option<Statement> {
         match self.tokens.clone().get(self.position).map(|t| &t.kind) {
             Some(TokenKind::Keyword(keyword)) => self.handle_keyword(keyword),
-            Some(TokenKind::BuiltIn(name)) if name == "print" => self.handle_builtin(name),
+            Some(TokenKind::BuiltIn(name)) if name == &BuiltInCatalog::Print => {
+                self.handle_builtin(name)
+            }
             _ => self.handle_other(),
         }
     }
 
-    fn handle_keyword(&mut self, keyword: &str) -> Option<Statement> {
+    fn handle_keyword(&mut self, keyword: &KeywordCatalog) -> Option<Statement> {
         match keyword {
-            "let" => self.parse_let(),
-            "function" => self.parse_function(),
-            "return" => self.parse_return(),
-            "if" => self.parse_if(),
-            _ => None,
+            KeywordCatalog::Let => self.parse_let(),
+            KeywordCatalog::Function => self.parse_function(),
+            KeywordCatalog::Return => self.parse_return(),
+            KeywordCatalog::If => self.parse_if(),
+            KeywordCatalog::While => self.parse_while(),
+            _ => {
+                self.print_error("unexpected keyword");
+                std::process::exit(1);
+            }
         }
     }
 
-    fn handle_builtin(&mut self, name: &String) -> Option<Statement> {
+    fn handle_builtin(&mut self, name: &BuiltInCatalog) -> Option<Statement> {
         self.position += 1;
         if let Some(Token {
             kind: TokenKind::LParen,
@@ -386,8 +464,12 @@ impl Parser {
                 }) = self.tokens.get(self.position)
                 {
                     self.position += 1; // Skip ';'
+                    let builtin_name = match name {
+                        BuiltInCatalog::Print => "print",
+                        // 在这里添加更多的内置函数
+                    };
                     return Some(Statement::Expression(Expression::FunctionCall(
-                        name.to_string(),
+                        builtin_name.to_string(),
                         args,
                     )));
                 }
@@ -402,29 +484,43 @@ impl Parser {
     fn handle_other(&mut self) -> Option<Statement> {
         info!("current token is {:?}", self.tokens.get(self.position));
         if let Some(expr) = self.parse_expression() {
-            if let Some(Token {
-                kind: TokenKind::Equals,
-                ..
-            }) = self.tokens.get(self.position)
-            {
-                self.position += 1;
-                if let Some(value_expr) = self.parse_expression() {
+            match expr {
+                Expression::UnaryOp(op, expr) if op == "++" || op == "--" => {
                     if let Some(Token {
                         kind: TokenKind::Semicolon,
                         ..
                     }) = self.tokens.get(self.position)
                     {
                         self.position += 1;
-                        return Some(Statement::Assignment(expr, value_expr));
+                        return Some(Statement::Expression(Expression::UnaryOp(op, expr)));
                     }
                 }
-            } else if let Some(Token {
-                kind: TokenKind::Semicolon,
-                ..
-            }) = self.tokens.get(self.position)
-            {
-                self.position += 1;
-                return Some(Statement::Expression(expr));
+                _ => {
+                    if let Some(Token {
+                        kind: TokenKind::Equals,
+                        ..
+                    }) = self.tokens.get(self.position)
+                    {
+                        self.position += 1;
+                        if let Some(value_expr) = self.parse_expression() {
+                            if let Some(Token {
+                                kind: TokenKind::Semicolon,
+                                ..
+                            }) = self.tokens.get(self.position)
+                            {
+                                self.position += 1;
+                                return Some(Statement::Assignment(expr, value_expr));
+                            }
+                        }
+                    } else if let Some(Token {
+                        kind: TokenKind::Semicolon,
+                        ..
+                    }) = self.tokens.get(self.position)
+                    {
+                        self.position += 1;
+                        return Some(Statement::Expression(expr));
+                    }
+                }
             }
         }
         None
@@ -557,52 +653,90 @@ impl Parser {
         };
 
         if let Some(condition) = condition {
-            if let Some(Token {
-                kind: TokenKind::LBrace,
+            // Parse the consequence block
+            let consequence = self.parse_block()?;
+
+            // Check for else
+            let alternative = if let Some(Token {
+                kind: TokenKind::Keyword(KeywordCatalog::Else),
                 ..
             }) = self.tokens.get(self.position)
             {
                 self.position += 1;
-                let mut consequence = Vec::new();
-                while self.tokens.get(self.position).map(|t| &t.kind) != Some(&TokenKind::RBrace) {
-                    if let Some(stmt) = self.parse_statement() {
-                        consequence.push(stmt);
-                    }
-                }
-                self.position += 1; // Skip '}'
-                let alternative = if let Some(Token {
-                    kind: TokenKind::Keyword(else_keyword),
+                // Check if it's an else-if
+                if let Some(Token {
+                    kind: TokenKind::Keyword(KeywordCatalog::If),
                     ..
                 }) = self.tokens.get(self.position)
                 {
-                    if else_keyword == "else" {
-                        self.position += 1;
-                        if let Some(Token {
-                            kind: TokenKind::LBrace,
-                            ..
-                        }) = self.tokens.get(self.position)
-                        {
-                            self.position += 1;
-                            let mut alt = Vec::new();
-                            while self.tokens.get(self.position).map(|t| &t.kind)
-                                != Some(&TokenKind::RBrace)
-                            {
-                                if let Some(stmt) = self.parse_statement() {
-                                    alt.push(stmt);
-                                }
-                            }
-                            self.position += 1; // Skip '}'
-                            Some(alt)
-                        } else {
-                            None
-                        }
+                    // Parse the else-if as a nested if statement
+                    if let Some(Statement::If(cond, cons, alt)) = self.parse_if() {
+                        Some(vec![Statement::If(cond, cons, alt)])
                     } else {
                         None
                     }
                 } else {
-                    None
-                };
-                return Some(Statement::If(condition, consequence, alternative));
+                    // Regular else block
+                    self.parse_block()
+                }
+            } else {
+                None
+            };
+
+            return Some(Statement::If(condition, consequence, alternative));
+        }
+        None
+    }
+
+    fn parse_while(&mut self) -> Option<Statement> {
+        self.position += 1;
+        let condition = if let Some(Token {
+            kind: TokenKind::LParen,
+            ..
+        }) = self.tokens.get(self.position)
+        {
+            self.position += 1;
+            let cond = self.parse_expression();
+            if let Some(Token {
+                kind: TokenKind::RParen,
+                ..
+            }) = self.tokens.get(self.position)
+            {
+                self.position += 1;
+            }
+            cond
+        } else {
+            self.parse_expression()
+        };
+
+        if let Some(condition) = condition {
+            if let Some(block) = self.parse_block() {
+                return Some(Statement::While(condition, block));
+            }
+        }
+        None
+    }
+
+    fn parse_block(&mut self) -> Option<Vec<Statement>> {
+        if let Some(Token {
+            kind: TokenKind::LBrace,
+            ..
+        }) = self.tokens.get(self.position)
+        {
+            self.position += 1;
+            let mut statements = Vec::new();
+            while let Some(token) = self.tokens.get(self.position) {
+                match &token.kind {
+                    TokenKind::RBrace => {
+                        self.position += 1;
+                        return Some(statements);
+                    }
+                    _ => {
+                        if let Some(stmt) = self.parse_statement() {
+                            statements.push(stmt);
+                        }
+                    }
+                }
             }
         }
         None
@@ -624,6 +758,14 @@ impl Parser {
 
     fn parse_term(&mut self) -> Option<Expression> {
         match self.tokens.get(self.position).cloned() {
+            Some(Token {
+                kind: TokenKind::Operator(op),
+                ..
+            }) if op == OperatorCatalog::Plus || op == OperatorCatalog::Minus => {
+                self.position += 1;
+                let expr = self.parse_term()?;
+                Some(Expression::UnaryOp(format!("{:?}", op), Box::new(expr)))
+            }
             Some(Token {
                 kind: TokenKind::Number(num),
                 ..
@@ -870,6 +1012,16 @@ impl Interpreter {
                 }
                 Some(result)
             }
+            Statement::While(condition, body) => {
+                let mut last_value = None;
+                while let Value::Number(cond) = self.evaluate_expression(condition.clone()) {
+                    if cond == 0 {
+                        break;
+                    }
+                    last_value = self.execute_statements(body.clone());
+                }
+                last_value
+            }
         }
     }
 
@@ -961,30 +1113,29 @@ impl Interpreter {
                 let right_value = self.evaluate_expression(*right);
                 match (left_value, right_value) {
                     (Value::Number(left_num), Value::Number(right_num)) => {
-                        let result = match op.as_str() {
-                            "+" => left_num + right_num,
-                            "-" => left_num - right_num,
-                            "*" => left_num * right_num,
-                            "/" => left_num / right_num,
-                            ">" => (left_num > right_num) as i32,
-                            "<" => (left_num < right_num) as i32,
-                            ">=" => (left_num >= right_num) as i32,
-                            "<=" => (left_num <= right_num) as i32,
-                            "==" => (left_num == right_num) as i32,
-                            "!=" => (left_num != right_num) as i32,
-                            _ => panic!("Unsupported operator: {}", op),
+                        let result = match op {
+                            OperatorCatalog::Plus => left_num + right_num,
+                            OperatorCatalog::Minus => left_num - right_num,
+                            OperatorCatalog::Multiply => left_num * right_num,
+                            OperatorCatalog::Divide => left_num / right_num,
+                            OperatorCatalog::GreaterThan => (left_num > right_num) as i32,
+                            OperatorCatalog::LessThan => (left_num < right_num) as i32,
+                            OperatorCatalog::GreaterEqual => (left_num >= right_num) as i32,
+                            OperatorCatalog::LessEqual => (left_num <= right_num) as i32,
+                            OperatorCatalog::Equal => (left_num == right_num) as i32,
+                            OperatorCatalog::NotEqual => (left_num != right_num) as i32,
                         };
                         Value::Number(result)
                     }
                     (Value::StringLiteral(left_str), Value::StringLiteral(right_str)) => {
-                        if op == "+" {
+                        if let OperatorCatalog::Plus = op {
                             let left_real_str = self.string_literals.get(&left_str).unwrap();
                             let right_real_str = self.string_literals.get(&right_str).unwrap();
                             let combined_str = format!("{}{}", left_real_str, right_real_str);
                             let unique_name = self.generate_unique_name(&combined_str);
                             Value::StringLiteral(unique_name)
                         } else {
-                            panic!("Unsupported operator for strings: {}", op)
+                            panic!("Unsupported operator for strings: {:?}", op)
                         }
                     }
                     _ => panic!("Type error in binary operation"),
@@ -1083,6 +1234,23 @@ impl Interpreter {
                     }
                 }
             }
+            Expression::UnaryOp(op, expr) => match &*expr {
+                Expression::Variable(name) => {
+                    if let Some(Value::Number(num)) = self.variables.get(name) {
+                        let new_value = match op.as_str() {
+                            "++" => num + 1,
+                            "--" => num - 1,
+                            _ => panic!("Unsupported unary operator: {}", op),
+                        };
+                        self.variables
+                            .insert(name.clone(), Value::Number(new_value));
+                        Value::Number(new_value)
+                    } else {
+                        panic!("Cannot apply {} to non-numeric variable {}", op, name)
+                    }
+                }
+                _ => panic!("Cannot apply {} to non-variable expression", op),
+            },
         }
     }
 }
