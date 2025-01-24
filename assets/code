@@ -1,0 +1,24 @@
+let obj = { x: 10, y: 20 };
+function myfun(x, y) {
+    if (x > y) {
+        return x - y;
+    } else {
+        return x + y;
+    }
+}
+function greet(name) {
+    return "Hello, " + name + "!";
+}
+let aaa = myfun(obj.x + 100, obj.y);
+let greeting = greet("World");
+print("aaa+12 : {}, aaa: {}", aaa + 12, aaa);
+print("aaa- obj.y: {}, obj.y: {}", aaa - obj.y, obj.y);
+print(greeting);
+
+function myfun() { return 100; }
+let a = myfun();
+print("a: {}", a);
+let sss="hello world";
+print("sss: {}", sss);
+let b = 10;
+print(b);
