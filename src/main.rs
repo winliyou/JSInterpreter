@@ -264,13 +264,33 @@ impl Lexer {
 
     fn handle_string(&mut self, line: usize, column: usize) -> Option<Token> {
         let mut string = String::new();
+        let mut escaped = false;
+
         while let Some(&ch) = self.input.get(self.position) {
             self.position += 1;
             self.column += 1;
-            if ch == '"' {
+
+            if escaped {
+                match ch {
+                    'n' => string.push('\n'),
+                    't' => string.push('\t'),
+                    'r' => string.push('\r'),
+                    '\\' => string.push('\\'),
+                    '"' => string.push('"'),
+                    _ => string.push(ch),
+                }
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
                 break;
+            } else {
+                if ch == '\n' {
+                    self.line += 1;
+                    self.column = 1;
+                }
+                string.push(ch);
             }
-            string.push(ch);
         }
         Some(self.create_token(TokenKind::StringLiteral(string), line, column))
     }
@@ -1106,7 +1126,7 @@ fn main() {
         'repl: loop {
             let mut input = String::new();
             let mut is_first_line = true;
-            
+
             loop {
                 if is_first_line {
                     print!("> ");
@@ -1126,29 +1146,28 @@ fn main() {
                             println!("Goodbye!");
                             break 'repl;
                         }
-                        
+
                         // 只在第一行是空白行时特殊处理
                         if is_first_line && line.trim().is_empty() {
                             break;
                         }
-                        
+
                         input.push_str(&line);
-                        
+
                         // 如果输入平衡了，就执行代码
                         if is_balanced(&input) {
                             // 确保输入不是空的
                             if !input.trim().is_empty() {
                                 let mut lexer = Lexer::new(&input);
-                                let tokens: Rc<Vec<Token>> = Rc::new(
-                                    std::iter::from_fn(|| lexer.next_token()).collect()
-                                );
+                                let tokens: Rc<Vec<Token>> =
+                                    Rc::new(std::iter::from_fn(|| lexer.next_token()).collect());
                                 let mut parser = Parser::new(tokens, lexer);
                                 let statements = parser.parse_statements();
                                 interpreter.execute_statements(statements);
                             }
                             break;
                         }
-                        
+
                         is_first_line = false;
                     }
                     Err(e) => {
